@@ -9,7 +9,8 @@
      6. Random Forest Insights (static)
      7. K-Means Visualization
      8. Recommendation Engine
-     9. Navigation
+     9. Find Similar Songs
+    10. Navigation
 ══════════════════════════════════════════════════════════════════ */
 
 
@@ -175,6 +176,9 @@ function parseCSV(text) {
       instrumentalness: parseFloat(f[idx.instrumentalness]) || 0,
       liveness:         parseFloat(f[idx.liveness])         || 0,
       popularity:       parseInt(f[idx.popularity])         || 0,
+      // Loudness is in dB (typically −60 to 0); normalize to [0,1] for distance math
+      loudness:         parseFloat(f[idx.loudness])         || -30,
+      loudnessNorm:     Math.min(1, Math.max(0, (parseFloat(f[idx.loudness]) + 60) / 60)),
     });
   }
   return songs;
@@ -290,6 +294,10 @@ function onDatasetReady(totalRows) {
   // Update recommendation notice
   const notice = document.getElementById('reco-notice');
   if (notice) notice.classList.add('hidden');
+
+  // Update similar songs notice
+  const similarNotice = document.getElementById('similar-notice');
+  if (similarNotice) similarNotice.style.display = 'none';
 }
 
 // ── UI helpers for upload states ──
@@ -1041,7 +1049,552 @@ function escHtml(str) {
 
 
 /* ══════════════════════════════════════════
-   9. NAVIGATION
+   9. FIND SIMILAR SONGS
+══════════════════════════════════════════ */
+
+// Max possible Euclidean distance across the 6 normalized features (each diff = 1)
+const SIMILAR_MAX_DIST = Math.sqrt(6);
+
+let similarInited    = false;
+let similarSeed      = null;
+let similarDebounce  = null;
+let similarSearchMode = 'all'; // 'all' | 'songs' | 'artists'
+
+function initSimilarSongs() {
+  if (similarInited) return;
+  similarInited = true;
+
+  const input = document.getElementById('similar-input');
+
+  input.addEventListener('input', () => {
+    clearTimeout(similarDebounce);
+    similarDebounce = setTimeout(() => handleSimilarInput(input.value), 250);
+  });
+
+  // Re-open autocomplete on focus if query already typed
+  input.addEventListener('focus', () => {
+    if (input.value.length >= 2) handleSimilarInput(input.value);
+  });
+
+  // Close autocomplete when clicking outside
+  document.addEventListener('click', e => {
+    if (!e.target.closest('#similar-input') && !e.target.closest('#similar-autocomplete')) {
+      closeSimilarAutocomplete();
+    }
+  });
+
+  document.getElementById('similar-clear-btn').addEventListener('click', clearSimilarSeed);
+
+  // "Go to Dashboard" link inside the notice banner
+  const goUpload = document.getElementById('similar-go-upload');
+  if (goUpload) goUpload.addEventListener('click', e => { e.preventDefault(); navigateTo('dashboard'); });
+
+  // Show/hide notice based on current data state
+  const notice = document.getElementById('similar-notice');
+  if (notice) notice.style.display = dataLoaded ? 'none' : '';
+
+  // Search mode tabs
+  document.querySelectorAll('#similar-search-tabs .search-tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      document.querySelectorAll('#similar-search-tabs .search-tab')
+        .forEach(t => t.classList.remove('active'));
+      tab.classList.add('active');
+      similarSearchMode = tab.dataset.mode;
+      const inp = document.getElementById('similar-input');
+      if (inp.value.trim().length >= 2) handleSimilarInput(inp.value);
+      else closeSimilarAutocomplete();
+    });
+  });
+}
+
+// ── Autocomplete ──
+
+function handleSimilarInput(query) {
+  const q = query.trim().toLowerCase();
+  if (!dataLoaded || q.length < 2) { closeSimilarAutocomplete(); return; }
+
+  const mode = similarSearchMode;
+  const tracks = [];
+  const artistMap = {}; // artist name → song count
+
+  for (const s of dataset) {
+    if (mode !== 'artists' && tracks.length < 8 && s.track.toLowerCase().includes(q)) {
+      tracks.push(s);
+      // Early exit when songs-only and list is full
+      if (mode === 'songs' && tracks.length >= 8) break;
+    }
+    if (mode !== 'songs' && s.artist.toLowerCase().includes(q)) {
+      artistMap[s.artist] = (artistMap[s.artist] || 0) + 1;
+    }
+  }
+
+  const artists = Object.entries(artistMap)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([name, count]) => ({ name, count }));
+
+  if (!tracks.length && !artists.length) { closeSimilarAutocomplete(); return; }
+  showSimilarAutocomplete(tracks, artists);
+}
+
+function showSimilarAutocomplete(tracks, artists) {
+  const list = document.getElementById('similar-autocomplete');
+  let html = '';
+
+  if (artists.length > 0) {
+    html += `<div class="ac-section-header">👤 Artists</div>`;
+    html += artists.map(a => `
+      <div class="autocomplete-item artist-item" data-artist="${escHtml(a.name)}">
+        <div class="ac-content">
+          <strong>${escHtml(a.name)}</strong>
+          <small>${a.count} song${a.count !== 1 ? 's' : ''} in dataset</small>
+        </div>
+      </div>`).join('');
+  }
+
+  if (tracks.length > 0) {
+    if (artists.length > 0) html += `<div class="ac-section-header">♪ Songs</div>`;
+    html += tracks.map((s, i) => `
+      <div class="autocomplete-item song-item" data-idx="${i}">
+        <div class="ac-content">
+          <strong>${escHtml(s.track)}</strong>
+          <small>${escHtml(s.artist)} · ${escHtml(s.genre)}</small>
+        </div>
+      </div>`).join('');
+  }
+
+  list.innerHTML = html;
+
+  list.querySelectorAll('.artist-item').forEach(el => {
+    el.addEventListener('mousedown', e => {
+      e.preventDefault();
+      selectSimilarArtist(el.dataset.artist);
+    });
+  });
+
+  list.querySelectorAll('.song-item').forEach(el => {
+    el.addEventListener('mousedown', e => {
+      e.preventDefault();
+      selectSimilarSeed(tracks[parseInt(el.dataset.idx, 10)]);
+    });
+  });
+
+  list.style.display = '';
+}
+
+function closeSimilarAutocomplete() {
+  const list = document.getElementById('similar-autocomplete');
+  if (list) { list.style.display = 'none'; list.innerHTML = ''; }
+}
+
+// ── Seed selection & display ──
+
+function selectSimilarSeed(song) {
+  similarSeed = song;
+  document.getElementById('similar-input').value = '';
+  closeSimilarAutocomplete();
+  renderSimilarSeedCard(song);
+  computeAndRenderSimilar(song);
+}
+
+function clearSimilarSeed() {
+  similarSeed = null;
+  document.getElementById('similar-seed-card').style.display    = 'none';
+  document.getElementById('similar-results-area').style.display = 'none';
+  document.getElementById('similar-computing').style.display    = 'none';
+}
+
+function renderSimilarSeedCard(song) {
+  if (song.isArtistProfile) {
+    document.getElementById('similar-seed-track').innerHTML =
+      `<span class="artist-profile-badge">Artist Mix</span>${escHtml(song.artist)}`;
+    document.getElementById('similar-seed-artist').textContent =
+      `${song.songCount} songs averaged · Primary genre: ${song.genre}`;
+  } else {
+    document.getElementById('similar-seed-track').textContent  = song.track;
+    document.getElementById('similar-seed-artist').textContent = `${song.artist} · ${song.genre}`;
+  }
+
+  // Feature bars — reuse the .fp-item pattern
+  const features = [
+    { label: 'Valence',   val: song.valence,       color: 'var(--green)'  },
+    { label: 'Energy',    val: song.energy,         color: 'var(--yellow)' },
+    { label: 'Dance',     val: song.danceability,   color: 'var(--blue)'   },
+    { label: 'Tempo',     val: song.tempoNorm,      color: 'var(--purple)' },
+    { label: 'Acoustic',  val: song.acousticness,   color: '#aaa'          },
+    { label: 'Loudness',  val: song.loudnessNorm,   color: '#e06080'       },
+  ];
+
+  document.getElementById('similar-seed-features').innerHTML = features.map(f => `
+    <div class="fp-item">
+      <div class="fp-label">${f.label}</div>
+      <div class="fp-bar-wrap"><div class="fp-bar" style="width:${(f.val * 100).toFixed(0)}%;background:${f.color}"></div></div>
+      <div class="fp-val">${f.val.toFixed(2)}</div>
+    </div>`).join('');
+
+  document.getElementById('similar-seed-card').style.display = '';
+}
+
+// ── Core similarity computation ──
+
+// Async wrapper so the spinner can render before the synchronous distance loop runs
+async function computeAndRenderSimilar(seed, excludeArtist = null) {
+  document.getElementById('similar-computing').style.display    = '';
+  document.getElementById('similar-results-area').style.display = 'none';
+  document.getElementById('similar-computing-msg').textContent  =
+    `Computing distances across ${dataset.length.toLocaleString()} songs…`;
+
+  await sleep(40); // yield to browser paint thread
+
+  const results = findSimilarSongs(seed, 10, excludeArtist);
+
+  document.getElementById('similar-computing').style.display = 'none';
+  renderSimilarResults(results, seed);
+}
+
+/*
+ * findSimilarSongs — equal-weight Euclidean distance across 6 normalized features.
+ *
+ * Uses Float32Array for distance storage (4 bytes each vs 8 for JS Number),
+ * the JS equivalent of NumPy's vectorized float32 array — minimises GC pressure
+ * over 200k iterations and keeps the typed-array in CPU cache during the sort.
+ */
+function findSimilarSongs(seed, n = 10, excludeArtist = null) {
+  const len = dataset.length;
+
+  // Pre-extract seed values into local vars so JS engine can keep them in registers
+  const sv = seed.valence,       se = seed.energy,
+        sd = seed.danceability,  st = seed.tempoNorm,
+        sa = seed.acousticness,  sl = seed.loudnessNorm;
+
+  // Typed array: 4 bytes × 230k ≈ 900 KB vs 1.8 MB for Float64
+  const dists = new Float32Array(len);
+  for (let i = 0; i < len; i++) {
+    const s = dataset[i];
+    dists[i] = Math.sqrt(
+      (s.valence      - sv) ** 2 +
+      (s.energy       - se) ** 2 +
+      (s.danceability - sd) ** 2 +
+      (s.tempoNorm    - st) ** 2 +
+      (s.acousticness - sa) ** 2 +
+      (s.loudnessNorm - sl) ** 2
+    );
+  }
+
+  // Build an index array sorted by ascending distance
+  const order = Array.from({ length: len }, (_, i) => i)
+    .sort((a, b) => dists[a] - dists[b]);
+
+  // Walk the sorted order, skip the seed itself and deduplicate by (track, artist)
+  const seen   = new Set();
+  const result = [];
+  for (const i of order) {
+    const s = dataset[i];
+    if (excludeArtist ? s.artist === excludeArtist
+                      : (s.track === seed.track && s.artist === seed.artist)) continue;
+    const key = `${s.track}|||${s.artist}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    // Convert distance to a 0–100% similarity score
+    const similarity = Math.max(0, (1 - dists[i] / SIMILAR_MAX_DIST) * 100);
+    result.push({ ...s, dist: dists[i], similarity });
+    if (result.length >= n) break;
+  }
+  return result;
+}
+
+// ── Results rendering ──
+
+function renderSimilarResults(songs, seed) {
+  const subtitle = seed.isArtistProfile
+    ? `Songs most similar to ${seed.artist} (avg profile of ${seed.songCount} songs) · ${dataset.length.toLocaleString()} songs searched`
+    : `Songs most similar to "${seed.track}" by ${seed.artist} · ${dataset.length.toLocaleString()} songs searched`;
+  document.getElementById('similar-result-subtitle').textContent = subtitle;
+
+  document.getElementById('similar-grid').innerHTML = songs.map((s, i) => `
+    <div class="reco-card">
+      <div class="reco-rank">#${i + 1}</div>
+      <div class="reco-track"  title="${escHtml(s.track)}">${escHtml(s.track)}</div>
+      <div class="reco-artist">${escHtml(s.artist)}</div>
+      <div class="reco-genre">${escHtml(s.genre)}</div>
+
+      <div class="reco-score">
+        <div class="score-label">Similar</div>
+        <div class="score-bar-wrap">
+          <div class="score-bar-fill" style="width:${s.similarity.toFixed(0)}%"></div>
+        </div>
+        <div class="score-val">${s.similarity.toFixed(0)}%</div>
+      </div>
+
+      <div class="reco-stats">
+        ${statRow('Valence',      s.valence,      valenceColor(s.valence), s.valence.toFixed(2))}
+        ${statRow('Energy',       s.energy,       'var(--yellow)',         s.energy.toFixed(2))}
+        ${statRow('Dance',        s.danceability, 'var(--blue)',           s.danceability.toFixed(2))}
+        ${statRow('Loudness',     null,           null,                    `${(s.loudness ?? 0).toFixed(1)} dB`)}
+      </div>
+    </div>`).join('');
+
+  document.getElementById('similar-results-area').style.display = '';
+}
+
+
+// ── Artist profile helpers ──
+
+function computeArtistProfile(artistName) {
+  const songs = dataset.filter(s => s.artist === artistName);
+  if (!songs.length) return null;
+
+  // Find most common genre
+  const genreCounts = {};
+  songs.forEach(s => { genreCounts[s.genre] = (genreCounts[s.genre] || 0) + 1; });
+  const mainGenre = Object.entries(genreCounts).sort((a, b) => b[1] - a[1])[0][0];
+
+  return {
+    isArtistProfile: true,
+    songCount:    songs.length,
+    track:        `${artistName} (artist mix)`,
+    artist:       artistName,
+    genre:        mainGenre,
+    valence:      avg(songs, 'valence'),
+    energy:       avg(songs, 'energy'),
+    danceability: avg(songs, 'danceability'),
+    tempo:        avg(songs, 'tempo'),
+    tempoNorm:    avg(songs, 'tempoNorm'),
+    acousticness: avg(songs, 'acousticness'),
+    speechiness:  avg(songs, 'speechiness'),
+    loudness:     avg(songs, 'loudness'),
+    loudnessNorm: avg(songs, 'loudnessNorm'),
+  };
+}
+
+function selectSimilarArtist(artistName) {
+  const profile = computeArtistProfile(artistName);
+  if (!profile) return;
+  similarSeed = profile;
+  document.getElementById('similar-input').value = '';
+  closeSimilarAutocomplete();
+  renderSimilarSeedCard(profile);
+  computeAndRenderSimilar(profile, artistName);
+}
+
+
+/* ══════════════════════════════════════════
+   11. RANDOM FOREST EXPLORER
+══════════════════════════════════════════ */
+
+let forestExplorerInited = false;
+
+function initForestExplorer() {
+  if (forestExplorerInited) return;
+  forestExplorerInited = true;
+  initDecisionTreeDemo();
+  initForestViz();
+  renderRFEFeatureImportance();
+}
+
+// ── Interactive decision tree ──
+
+function initDecisionTreeDemo() {
+  const energySlider = document.getElementById('dt-energy');
+  const danceSlider  = document.getElementById('dt-dance');
+  if (!energySlider || !danceSlider) return;
+
+  const update = () => {
+    const e = parseFloat(energySlider.value);
+    const d = parseFloat(danceSlider.value);
+    document.getElementById('dt-energy-val').textContent = e.toFixed(2);
+    document.getElementById('dt-dance-val').textContent  = d.toFixed(2);
+    updateTreeHighlight(e, d);
+  };
+
+  energySlider.addEventListener('input', update);
+  danceSlider.addEventListener('input', update);
+  update(); // draw initial state
+}
+
+function setTreeNodeActive(gId, rId, color) {
+  const g = document.getElementById(gId);
+  const r = document.getElementById(rId);
+  if (!g || !r) return;
+  g.setAttribute('opacity', '1');
+  r.setAttribute('stroke', color);
+  r.setAttribute('stroke-width', '2.5');
+  const fills = {
+    '#1db954': 'rgba(29,185,84,0.10)',
+    '#f5a623': 'rgba(245,166,35,0.10)',
+    '#e04040': 'rgba(224,64,64,0.10)',
+  };
+  r.setAttribute('fill', fills[color] || 'rgba(255,255,255,0.05)');
+}
+
+function setTreeNodeDim(gId, rId) {
+  const g = document.getElementById(gId);
+  const r = document.getElementById(rId);
+  if (!g || !r) return;
+  g.setAttribute('opacity', '0.2');
+  r.setAttribute('stroke', '#2a2a2a');
+  r.setAttribute('stroke-width', '1.5');
+  r.setAttribute('fill', '#1e1e1e');
+}
+
+function setTreeLineActive(id, color) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.setAttribute('stroke', color);
+  el.setAttribute('stroke-width', '2.5');
+}
+
+function setTreeLineDim(id) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.setAttribute('stroke', '#2a2a2a');
+  el.setAttribute('stroke-width', '1.5');
+}
+
+function setTreeLabelActive(id, color) {
+  const el = document.getElementById(id);
+  if (el) el.setAttribute('fill', color);
+}
+
+function setTreeLabelDim(id) {
+  const el = document.getElementById(id);
+  if (el) el.setAttribute('fill', '#404040');
+}
+
+function updateTreeHighlight(energy, dance) {
+  // Dim everything first
+  [['g-root','r-root'],['g-dance','r-dance'],['g-low','r-low'],['g-high','r-high'],['g-med','r-med']]
+    .forEach(([g, r]) => setTreeNodeDim(g, r));
+  ['l-left','l-right','l-ll','l-lr'].forEach(id => setTreeLineDim(id));
+  ['lb-l','lb-r','lb-ll','lb-lr'].forEach(id => setTreeLabelDim(id));
+
+  // Root is always active
+  setTreeNodeActive('g-root', 'r-root', '#1db954');
+
+  let predLabel, predColor, predVal;
+
+  if (energy > 0.6) {
+    setTreeLineActive('l-left', '#1db954');
+    setTreeLabelActive('lb-l', '#1db954');
+    setTreeNodeActive('g-dance', 'r-dance', '#f5a623');
+
+    if (dance > 0.5) {
+      setTreeLineActive('l-ll', '#1db954');
+      setTreeLabelActive('lb-ll', '#1db954');
+      setTreeNodeActive('g-high', 'r-high', '#1db954');
+      predLabel = 'High Valence'; predColor = '#1db954'; predVal = 0.72;
+    } else {
+      setTreeLineActive('l-lr', '#e04040');
+      setTreeLabelActive('lb-lr', '#e04040');
+      setTreeNodeActive('g-med', 'r-med', '#f5a623');
+      predLabel = 'Medium Valence'; predColor = '#f5a623'; predVal = 0.45;
+    }
+  } else {
+    setTreeLineActive('l-right', '#e04040');
+    setTreeLabelActive('lb-r', '#e04040');
+    setTreeNodeActive('g-low', 'r-low', '#e04040');
+    predLabel = 'Low Valence'; predColor = '#e04040'; predVal = 0.22;
+  }
+
+  const box = document.getElementById('tree-pred-box');
+  if (!box) return;
+  box.style.borderColor = predColor;
+  box.innerHTML = `
+    <div class="tpb-label">Prediction</div>
+    <div class="tpb-result" style="color:${predColor}">${predLabel}</div>
+    <div class="tpb-val">Predicted valence ≈ ${predVal}</div>`;
+}
+
+// ── Forest visualization ──
+
+const TREE_SVG_STR = '<svg viewBox="0 0 32 46" xmlns="http://www.w3.org/2000/svg" width="28" height="40">' +
+  '<polygon points="16,2 29,20 3,20" fill="#1db954"/>' +
+  '<polygon points="16,13 27,29 5,29" fill="#17a349"/>' +
+  '<rect x="12" y="29" width="8" height="11" rx="1" fill="#5d3a1a"/></svg>';
+
+const FOREST_STAGES = [
+  { count: 1,  predVal: '0.60', ci: '±0.18', r2: '0.52', label: 'Single Decision Tree'     },
+  { count: 5,  predVal: '0.64', ci: '±0.09', r2: '0.61', label: '5-Tree Ensemble'           },
+  { count: 20, predVal: '0.67', ci: '±0.04', r2: '0.67', label: '20-Tree Forest (our model)' },
+];
+
+function initForestViz() {
+  document.querySelectorAll('#page-forest-explorer .forest-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('#page-forest-explorer .forest-btn')
+        .forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      renderForestStage(parseInt(btn.dataset.count, 10));
+    });
+  });
+  renderForestStage(1);
+}
+
+function renderForestStage(count) {
+  const display = document.getElementById('forest-display');
+  if (!display) return;
+
+  const trees = Array.from({ length: count }, (_, i) =>
+    `<div class="forest-tree-icon" style="animation-delay:${i * 40}ms">${TREE_SVG_STR}</div>`
+  ).join('');
+  display.innerHTML = `<div class="forest-tree-grid">${trees}</div>`;
+
+  const stage = FOREST_STAGES.find(s => s.count === count) || FOREST_STAGES[2];
+  const predCard = document.getElementById('forest-pred-card');
+  if (!predCard) return;
+
+  const r2Color = count === 20 ? 'var(--green)' : '#a0a0a0';
+  predCard.innerHTML = `
+    <div class="fpred-row">
+      <div class="fpred-section">
+        <div class="fpred-label">Ensemble size</div>
+        <div class="fpred-value">${count} tree${count !== 1 ? 's' : ''}</div>
+        <div class="fpred-sub">${stage.label}</div>
+      </div>
+      <div class="fpred-divider"></div>
+      <div class="fpred-section">
+        <div class="fpred-label">Sample prediction</div>
+        <div class="fpred-value" style="color:var(--green)">valence ${stage.predVal}</div>
+        <div class="fpred-sub">Confidence interval: ${stage.ci}</div>
+      </div>
+      <div class="fpred-divider"></div>
+      <div class="fpred-section">
+        <div class="fpred-label">Model R²</div>
+        <div class="fpred-value" style="color:${r2Color}">${stage.r2}</div>
+        <div class="fpred-sub">${count === 20 ? 'Best — our final model' : 'Improves with more trees'}</div>
+      </div>
+    </div>`;
+}
+
+// ── Feature importance bars (RF Explorer copy, independent of #fi-chart) ──
+
+function renderRFEFeatureImportance() {
+  const container = document.getElementById('rfe-fi-chart');
+  if (!container) return;
+
+  const maxVal = FEATURE_IMPORTANCE[0].value; // Danceability = 0.343
+  container.innerHTML = FEATURE_IMPORTANCE.map(f => `
+    <div class="corr-row">
+      <div class="corr-label">${f.label}</div>
+      <div class="corr-bar-wrap">
+        <div class="corr-bar" style="width:0%;background:var(--green)"
+             data-target="${(f.value / maxVal * 100).toFixed(1)}"></div>
+      </div>
+      <div class="corr-val">${f.value.toFixed(3)}</div>
+    </div>`).join('');
+
+  // Animate after a frame so bars start from 0 visibly
+  setTimeout(() => {
+    container.querySelectorAll('.corr-bar').forEach(bar => {
+      bar.style.transition = 'width 0.7s ease';
+      bar.style.width = bar.dataset.target + '%';
+    });
+  }, 80);
+}
+
+
+/* ══════════════════════════════════════════
+   10. NAVIGATION
 ══════════════════════════════════════════ */
 
 function navigateTo(pageId) {
@@ -1059,9 +1612,11 @@ function onPageEnter(pageId) {
     if (corrNeedsRefresh || !document.getElementById('corr-chart').children.length) renderCorrChart();
     else initCorrelationChart();
   }
-  if (pageId === 'forest')         initForestChart();
-  if (pageId === 'kmeans')         initKmeans();
-  if (pageId === 'recommendation') initRecommendation();
+  if (pageId === 'forest')          initForestChart();
+  if (pageId === 'forest-explorer') initForestExplorer();
+  if (pageId === 'kmeans')          initKmeans();
+  if (pageId === 'recommendation')  initRecommendation();
+  if (pageId === 'similar-songs')   initSimilarSongs();
 }
 
 document.querySelectorAll('.nav-item').forEach(item => {

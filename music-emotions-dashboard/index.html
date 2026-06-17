@@ -27,8 +27,14 @@
       <a href="#" class="nav-item" data-page="kmeans">
         <span class="nav-icon">◎</span> K-Means Visualization
       </a>
+      <a href="#" class="nav-item" data-page="forest-explorer">
+        <span class="nav-icon">⊞</span> RF Explorer
+      </a>
       <a href="#" class="nav-item" data-page="recommendation">
         <span class="nav-icon">♪</span> Recommendation Demo
+      </a>
+      <a href="#" class="nav-item" data-page="similar-songs">
+        <span class="nav-icon">⊛</span> Find Similar Songs
       </a>
     </nav>
     <div class="sidebar-footer">
@@ -128,14 +134,14 @@
           <p class="body-text">
             This project analyzes the Spotify audio feature dataset containing
             <strong>232,725 songs</strong> across <strong>27 genres</strong>.
-            We explored whether low-level numerical audio descriptors — such as
+            I explored whether low-level numerical audio descriptors — such as
             danceability, energy, tempo, and loudness — can explain or predict
             <strong>valence</strong>, Spotify's measure of musical positivity.
           </p>
           <p class="body-text" style="margin-top:12px">
             Using <strong>correlation analysis</strong>, <strong>linear regression</strong>,
             <strong>Random Forest regression</strong>, and <strong>K-Means clustering</strong>,
-            we found that audio features can meaningfully describe emotion, but the
+            I found that audio features can meaningfully describe emotion, but the
             relationship is non-linear and genre-dependent.
           </p>
         </div>
@@ -221,7 +227,7 @@
       <div class="card">
         <h2 class="card-title">Why Correlations Matter</h2>
         <p class="body-text">
-          Correlation analysis was our first step in understanding which features are worth modeling.
+          Correlation analysis was my first step in understanding which features are worth modeling.
           While correlation doesn't imply causation, features with higher |r| values are more likely
           to contribute to a predictive model. This guided feature selection for both Linear Regression
           and Random Forest models.
@@ -333,7 +339,7 @@
             <div class="step"><span class="step-num">5</span><div><strong>Repeat</strong><p>Steps 3–4 repeat until centroids stop moving (convergence).</p></div></div>
           </div>
           <div class="callout" style="margin-top:16px">
-            In our project, K-Means grouped songs into clusters like
+            In my project, K-Means grouped songs into clusters like
             <em>"high energy, low valence"</em> and
             <em>"high danceability, high valence"</em> — revealing meaningful emotional segments.
           </div>
@@ -497,6 +503,250 @@
             formula over audio features from SpotifyFeatures.csv. Results are for educational
             demonstration only and do not represent a live Spotify recommendation system.
           </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ════════════════════════════════════
+         PAGE: Find Similar Songs
+    ════════════════════════════════════ -->
+    <section class="page" id="page-similar-songs">
+      <div class="page-header">
+        <h1>Find Similar Songs</h1>
+        <p class="page-subtitle">Content-based audio fingerprint matching across the full dataset</p>
+      </div>
+
+      <!-- Dataset not loaded notice -->
+      <div class="reco-notice" id="similar-notice">
+        <span class="notice-icon">ℹ</span>
+        <span>Load SpotifyFeatures.csv on the Dashboard to enable this feature.
+          <a href="#" id="similar-go-upload">Go to Dashboard →</a>
+        </span>
+      </div>
+
+      <!-- Search card -->
+      <div class="card">
+        <h2 class="card-title">Search for a Song or Artist</h2>
+        <p class="body-text" style="margin-bottom:12px">
+          Search by track name or artist. Selecting an artist builds an average audio profile
+          from all their songs in the dataset, then finds the most similar tracks.
+        </p>
+        <div class="search-tabs" id="similar-search-tabs">
+          <button class="search-tab active" data-mode="all">All</button>
+          <button class="search-tab" data-mode="songs">♪ Songs</button>
+          <button class="search-tab" data-mode="artists">👤 Artists</button>
+        </div>
+        <div class="seed-search-wrap" style="max-width:520px">
+          <input type="text" id="similar-input" class="seed-input"
+                 placeholder="e.g. Bohemian Rhapsody, The Beatles, Clair de Lune…"
+                 autocomplete="off" />
+          <div class="autocomplete-list" id="similar-autocomplete" style="display:none"></div>
+        </div>
+      </div>
+
+      <!-- Selected seed display -->
+      <div class="card similar-seed-card" id="similar-seed-card" style="display:none">
+        <div class="similar-seed-header">
+          <div class="similar-seed-info">
+            <div class="similar-seed-label">Comparing to:</div>
+            <div class="similar-seed-track" id="similar-seed-track"></div>
+            <div class="similar-seed-artist" id="similar-seed-artist"></div>
+          </div>
+          <button class="btn btn-sm" id="similar-clear-btn">✕ Clear</button>
+        </div>
+        <div class="feature-profile" id="similar-seed-features" style="margin-top:16px"></div>
+      </div>
+
+      <!-- Computing indicator -->
+      <div class="card" id="similar-computing" style="display:none">
+        <div class="load-status" style="padding:10px 0">
+          <div class="load-spinner"></div>
+          <div class="load-msg" id="similar-computing-msg">Computing distances…</div>
+        </div>
+      </div>
+
+      <!-- Results -->
+      <div id="similar-results-area" style="display:none">
+        <div class="results-header">
+          <h2 class="results-title">10 Most Similar Songs</h2>
+          <p class="page-subtitle" id="similar-result-subtitle"></p>
+        </div>
+        <div class="reco-grid" id="similar-grid"></div>
+      </div>
+
+      <!-- Explanation panel -->
+      <div class="card">
+        <h2 class="card-title">How This Works</h2>
+        <p class="body-text">
+          This feature demonstrates a simplified <strong>content-based recommendation system</strong>.
+          Songs are recommended based on similarity in audio features rather than popularity or user behavior.
+        </p>
+        <div class="two-col" style="margin-top:16px;margin-bottom:0">
+          <div class="insight-box green" style="flex:1;margin-bottom:0">
+            <div class="insight-title">6 Features Used</div>
+            <p>Valence, Energy, Danceability, Tempo, Acousticness, and Loudness — each normalized to
+               a 0–1 scale before comparison so no single feature dominates by unit size.</p>
+          </div>
+          <div class="insight-box gray" style="flex:1;margin-bottom:0">
+            <div class="insight-title">Euclidean Distance</div>
+            <p>Distance is computed across all 6 normalized dimensions simultaneously.
+               Lower distance = more similar audio fingerprint. Converted to a similarity percentage for display.</p>
+          </div>
+          <div class="insight-box yellow" style="flex:1;margin-bottom:0">
+            <div class="insight-title">Performance</div>
+            <p>Uses a typed <code>Float32Array</code> for distance storage — the JS equivalent
+               of NumPy vectorized ops — to handle 200k+ comparisons with minimal memory overhead.</p>
+          </div>
+        </div>
+        <div class="callout" style="margin-top:16px">
+          <strong>Compared to real Spotify:</strong> Production recommenders also incorporate
+          listening history, collaborative filtering, skip patterns, and deep neural audio embeddings.
+          This prototype uses only the raw audio features available in SpotifyFeatures.csv.
+        </div>
+      </div>
+    </section>
+
+    <!-- ════════════════════════════════════
+         PAGE: Random Forest Explorer
+    ════════════════════════════════════ -->
+    <section class="page" id="page-forest-explorer">
+      <div class="page-header">
+        <h1>Random Forest Explorer</h1>
+        <p class="page-subtitle">An interactive visual guide to how Random Forest works</p>
+      </div>
+
+      <!-- Step 1: Decision Tree -->
+      <div class="card">
+        <h2 class="card-title">Step 1 · A Single Decision Tree</h2>
+        <p class="body-text">
+          A decision tree makes predictions by asking a series of yes/no questions about the input features.
+          Each branch leads to another question or a final prediction (leaf node).
+          Adjust the sliders to trace a path through this simplified example tree.
+        </p>
+        <div class="rfe-tree-layout">
+          <div class="rfe-tree-svg-wrap">
+            <svg id="dt-svg" viewBox="0 0 560 312" xmlns="http://www.w3.org/2000/svg">
+              <!-- Connector lines (drawn first, under nodes) -->
+              <line id="l-left"  x1="280" y1="64" x2="140" y2="138" stroke="#2a2a2a" stroke-width="1.5"/>
+              <line id="l-right" x1="280" y1="64" x2="422" y2="138" stroke="#2a2a2a" stroke-width="1.5"/>
+              <line id="l-ll"    x1="140" y1="192" x2="76"  y2="250" stroke="#2a2a2a" stroke-width="1.5"/>
+              <line id="l-lr"    x1="140" y1="192" x2="208" y2="250" stroke="#2a2a2a" stroke-width="1.5"/>
+              <!-- Branch labels -->
+              <text id="lb-l"  x="186" y="108" fill="#404040" font-size="11" font-family="system-ui,sans-serif" font-weight="600" text-anchor="middle">YES ✓</text>
+              <text id="lb-r"  x="368" y="108" fill="#404040" font-size="11" font-family="system-ui,sans-serif" font-weight="600" text-anchor="middle">NO ✗</text>
+              <text id="lb-ll" x="94"  y="230" fill="#404040" font-size="10" font-family="system-ui,sans-serif" font-weight="600" text-anchor="middle">YES ✓</text>
+              <text id="lb-lr" x="182" y="230" fill="#404040" font-size="10" font-family="system-ui,sans-serif" font-weight="600" text-anchor="middle">NO ✗</text>
+              <!-- Root: Energy > 0.6? -->
+              <g id="g-root">
+                <rect id="r-root" x="180" y="10" width="200" height="54" rx="8" fill="#1e1e1e" stroke="#2a2a2a" stroke-width="1.5"/>
+                <text x="280" y="34" fill="#ffffff" font-size="13" font-family="system-ui,sans-serif" font-weight="700" text-anchor="middle">Energy &gt; 0.6?</text>
+                <text x="280" y="52" fill="#606060" font-size="10" font-family="system-ui,sans-serif" text-anchor="middle">Root Node · Feature #2</text>
+              </g>
+              <!-- Danceability inner node -->
+              <g id="g-dance">
+                <rect id="r-dance" x="52" y="138" width="176" height="54" rx="8" fill="#1e1e1e" stroke="#2a2a2a" stroke-width="1.5"/>
+                <text x="140" y="162" fill="#ffffff" font-size="12" font-family="system-ui,sans-serif" font-weight="700" text-anchor="middle">Danceability &gt; 0.5?</text>
+                <text x="140" y="179" fill="#606060" font-size="10" font-family="system-ui,sans-serif" text-anchor="middle">Inner Node · Feature #1</text>
+              </g>
+              <!-- Low Valence leaf -->
+              <g id="g-low">
+                <rect id="r-low" x="342" y="138" width="160" height="54" rx="8" fill="#1e1e1e" stroke="#2a2a2a" stroke-width="1.5"/>
+                <text x="422" y="161" fill="#e04040" font-size="13" font-family="system-ui,sans-serif" font-weight="700" text-anchor="middle">Low Valence</text>
+                <text x="422" y="178" fill="#606060" font-size="10" font-family="system-ui,sans-serif" text-anchor="middle">≈ 0.22 · Leaf Node</text>
+              </g>
+              <!-- High Valence leaf -->
+              <g id="g-high">
+                <rect id="r-high" x="20" y="250" width="112" height="50" rx="8" fill="#1e1e1e" stroke="#2a2a2a" stroke-width="1.5"/>
+                <text x="76" y="273" fill="#1db954" font-size="12" font-family="system-ui,sans-serif" font-weight="700" text-anchor="middle">High Valence</text>
+                <text x="76" y="289" fill="#606060" font-size="10" font-family="system-ui,sans-serif" text-anchor="middle">≈ 0.72 · Leaf</text>
+              </g>
+              <!-- Med Valence leaf -->
+              <g id="g-med">
+                <rect id="r-med" x="152" y="250" width="112" height="50" rx="8" fill="#1e1e1e" stroke="#2a2a2a" stroke-width="1.5"/>
+                <text x="208" y="273" fill="#f5a623" font-size="12" font-family="system-ui,sans-serif" font-weight="700" text-anchor="middle">Med Valence</text>
+                <text x="208" y="289" fill="#606060" font-size="10" font-family="system-ui,sans-serif" text-anchor="middle">≈ 0.45 · Leaf</text>
+              </g>
+            </svg>
+            <div id="tree-pred-box" class="tree-pred-box"></div>
+          </div>
+          <div class="rfe-tree-controls">
+            <div class="dt-slider-label">
+              <span>Energy</span>
+              <span class="dt-slider-val" id="dt-energy-val">0.75</span>
+            </div>
+            <input type="range" class="dt-slider" id="dt-energy" min="0" max="1" step="0.01" value="0.75"/>
+            <div class="dt-slider-hint">High energy → upbeat, intense tracks</div>
+            <div class="dt-slider-label" style="margin-top:22px">
+              <span>Danceability</span>
+              <span class="dt-slider-val" id="dt-dance-val">0.60</span>
+            </div>
+            <input type="range" class="dt-slider" id="dt-dance" min="0" max="1" step="0.01" value="0.60"/>
+            <div class="dt-slider-hint">High danceability → strong rhythm, groove</div>
+            <div class="dt-threshold-note">
+              <div>Threshold 1: <strong>Energy &gt; 0.6</strong></div>
+              <div style="margin-top:5px">Threshold 2: <strong>Danceability &gt; 0.5</strong></div>
+              <div style="margin-top:8px;color:var(--text-dim);font-size:11px">
+                Thresholds are learned from training data — the splits that minimize prediction error.
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 2: Forest visualization -->
+      <div class="card">
+        <h2 class="card-title">Step 2 · Many Trees = Better Predictions</h2>
+        <p class="body-text">
+          A single tree can overfit and make noisy predictions. Random Forest trains many trees on
+          random subsets of data and features, then <em>averages</em> all their predictions.
+          More trees → lower variance → more reliable results.
+        </p>
+        <div class="forest-controls">
+          <button class="forest-btn active" data-count="1">1 Tree</button>
+          <button class="forest-btn" data-count="5">5 Trees</button>
+          <button class="forest-btn" data-count="20">20 Trees</button>
+        </div>
+        <div id="forest-display" class="forest-display"></div>
+        <div id="forest-pred-card" class="forest-pred-card"></div>
+      </div>
+
+      <!-- Step 3: Feature Importance -->
+      <div class="card">
+        <h2 class="card-title">Step 3 · Feature Importance from Our Model</h2>
+        <p class="body-text">
+          After training, Random Forest reports how much each feature reduced prediction error.
+          Features used near the root of many trees (where they split the most data) earn higher importance.
+        </p>
+        <div id="rfe-fi-chart" class="corr-chart" style="margin-top:20px"></div>
+        <p class="body-text" style="margin-top:12px;color:var(--text-muted);font-size:13px">
+          Danceability dominates because it correlates most strongly with emotional positivity.
+          The top 3 features (Danceability + Energy + Speechiness) account for over 60% of total importance.
+        </p>
+      </div>
+
+      <!-- Summary -->
+      <div class="card">
+        <h2 class="card-title">Key Takeaway</h2>
+        <div class="callout" style="background:rgba(29,185,84,0.05);border-color:var(--green)">
+          <strong style="color:var(--green)">Why Random Forest outperformed Linear Regression (R² 0.67 vs 0.41):</strong>
+          <ul style="margin:10px 0 0;padding-left:1.3em;line-height:1.9;color:var(--text-muted)">
+            <li>Linear Regression assumes <em>linear</em> relationships — but music emotion is not linear.</li>
+            <li>Random Forest captures <em>non-linear interactions</em>: high Energy <em>and</em> high Danceability together predict happiness better than either alone.</li>
+            <li>20 trees trained on random subsets → diverse perspectives → individual mistakes cancel out.</li>
+            <li>Ensemble averaging reduces variance and produces a more stable prediction.</li>
+          </ul>
+        </div>
+        <div class="two-col" style="margin-top:16px">
+          <div class="insight-box green" style="flex:1;margin-bottom:0">
+            <div class="insight-title">Random Forest</div>
+            <p style="font-size:26px;font-weight:800;color:var(--green);margin:6px 0 4px">R² = 0.67</p>
+            <p style="font-size:13px">Captures non-linear feature interactions. Robust to outliers. Feature importance as a bonus.</p>
+          </div>
+          <div class="insight-box gray" style="flex:1;margin-bottom:0">
+            <div class="insight-title">Linear Regression</div>
+            <p style="font-size:26px;font-weight:800;color:#6a6a6a;margin:6px 0 4px">R² = 0.41</p>
+            <p style="font-size:13px">Simple, interpretable baseline. Underperforms when features interact non-linearly.</p>
+          </div>
         </div>
       </div>
     </section>
