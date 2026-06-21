@@ -18,10 +18,12 @@
    1. STATE & CONSTANTS
 ══════════════════════════════════════════ */
 
-let dataset       = [];
-let allGenres     = [];   // sorted unique genre strings
-let currentSeed   = null; // currently selected seed song object
-let dataLoaded    = false;
+let dataset           = [];
+let allGenres         = [];   // sorted unique genre strings
+let currentSeed       = null; // currently selected seed song object
+let dataLoaded        = false;
+let lastTargetCluster = null; // emotional cluster assigned to the last recommendation target
+let lastSeedCluster   = null; // emotional cluster assigned to the last similar-songs seed
 
 const SAMPLE_SIZE = 232725;
 
@@ -42,6 +44,13 @@ const LEVEL_MAP = { low: 0.22, medium: 0.55, high: 0.85 };
 // Weighted Euclidean distance weights — informed by Random Forest feature importance
 const WEIGHTS = { valence: 3.0, danceability: 2.5, energy: 2.0, tempoNorm: 1.0, acousticness: 1.0, speechiness: 0.5 };
 const TOTAL_WEIGHT = Object.values(WEIGHTS).reduce((a, b) => a + b, 0);
+
+// K-Means emotional cluster centroids from notebook analysis (fixed — not re-computed in browser)
+const EMOTIONAL_CENTROIDS = [
+  { id: 0, label: 'High Energy Tracks',                danceability: 0.553, energy: 0.819, valence: 0.533 },
+  { id: 1, label: 'Calm & Low-Valence Tracks',         danceability: 0.342, energy: 0.205, valence: 0.216 },
+  { id: 2, label: 'Danceable & Positive Groove Tracks', danceability: 0.682, energy: 0.519, valence: 0.512 },
+];
 
 // Curated fallback songs shown when no CSV is loaded (7 moods × 6 tracks)
 const MOCK_SONGS = {
@@ -110,6 +119,31 @@ const STATIC_GENRES = [
   { genre: 'Classical',        valence: 0.30, energy: 0.25, danceability: 0.28 },
   { genre: "Children's Music", valence: 0.88, energy: 0.55, danceability: 0.62 },
 ];
+
+
+/* ══════════════════════════════════════════
+   1b. CLUSTER HELPERS
+══════════════════════════════════════════ */
+
+// Returns the id (0, 1, or 2) of the nearest emotional centroid for a given profile
+function assignEmotionalCluster(profile) {
+  let minDist = Infinity;
+  let nearest = 0;
+  for (const c of EMOTIONAL_CENTROIDS) {
+    const d = Math.sqrt(
+      (profile.danceability - c.danceability) ** 2 +
+      (profile.energy       - c.energy)       ** 2 +
+      (profile.valence      - c.valence)       ** 2
+    );
+    if (d < minDist) { minDist = d; nearest = c.id; }
+  }
+  return nearest;
+}
+
+function getClusterLabel(clusterId) {
+  const c = EMOTIONAL_CENTROIDS.find(c => c.id === clusterId);
+  return c ? c.label : 'Unknown Cluster';
+}
 
 
 /* ══════════════════════════════════════════
@@ -261,6 +295,10 @@ function handleFile(file) {
 // Called once the dataset array is ready; updates the entire dashboard
 function onDatasetReady(totalRows) {
   dataLoaded = true;
+
+  // Assign every song to its nearest emotional cluster using fixed notebook centroids
+  dataset.forEach(s => { s.cluster = assignEmotionalCluster(s); });
+  console.log('[Clustering] Assigned emotional clusters to', dataset.length, 'songs');
 
   // Extract sorted unique genres
   const genreSet = new Set(dataset.map(s => s.genre).filter(Boolean));
@@ -880,13 +918,34 @@ function getRecommendations(n = 10) {
 
   let pool;
   if (dataLoaded && dataset.length > 0) {
-    pool = dataset.filter(s => {
+    // Assign target profile to its nearest emotional cluster
+    lastTargetCluster = assignEmotionalCluster(target);
+    console.log(`[Reco] Target cluster: ${lastTargetCluster} (${getClusterLabel(lastTargetCluster)})`);
+
+    // Primary candidate pool: songs in the same emotional cluster, excluding seed
+    const clusterPool = dataset.filter(s => {
       if (currentSeed && s.track === currentSeed.track && s.artist === currentSeed.artist) return false;
-      if (genre && s.genre !== genre) return false;
-      return true;
+      return s.cluster === lastTargetCluster;
     });
+
+    // Apply genre filter inside the cluster
+    const genreFiltered = genre ? clusterPool.filter(s => s.genre === genre) : clusterPool;
+    console.log(`[Reco] Cluster pool: ${clusterPool.length} songs | After genre filter: ${genreFiltered.length} songs`);
+
+    if (genreFiltered.length >= 20) {
+      pool = genreFiltered;
+    } else {
+      // Fall back to full dataset with the same genre filter
+      console.log('[Reco] Cluster pool too small — falling back to full dataset');
+      pool = dataset.filter(s => {
+        if (currentSeed && s.track === currentSeed.track && s.artist === currentSeed.artist) return false;
+        if (genre && s.genre !== genre) return false;
+        return true;
+      });
+    }
   } else {
-    // Merge all mock song lists and filter by mood proximity
+    lastTargetCluster = null;
+    // Merge all mock song lists and use as pool
     pool = Object.values(MOCK_SONGS).flat().map(s => ({
       ...s,
       tempoNorm: Math.min(s.tempo / 250, 1),
@@ -895,7 +954,7 @@ function getRecommendations(n = 10) {
 
   if (pool.length === 0) return [];
 
-  // Score and sort
+  // Score and sort using weighted Euclidean distance (primary ranking method)
   const scored = pool.map(s => ({ ...s, score: scoreCandidate(s, target) }));
   scored.sort((a, b) => b.score - a.score);
 
@@ -919,11 +978,12 @@ function renderRecoResults(songs) {
 
   sub.textContent = [
     `Mood: ${currentMood}`,
+    (dataLoaded && lastTargetCluster !== null) ? `Target cluster: ${getClusterLabel(lastTargetCluster)}` : null,
     `Energy: ${currentEnergy}`,
     `Dance: ${currentDance}`,
     genre ? `Genre: ${genre}` : null,
     currentSeed ? `Seed: "${currentSeed.track}"` : null,
-    dataLoaded ? `(from ${dataset.length.toLocaleString()} songs)` : '(demo data)',
+    dataLoaded ? `from ${dataset.length.toLocaleString()} songs` : '(demo data)',
   ].filter(Boolean).join(' · ');
 
   grid.innerHTML = songs.map((s, i) => `
@@ -1471,22 +1531,35 @@ async function computeAndRenderSimilar(seed, excludeArtist = null) {
 /*
  * findSimilarSongs — equal-weight Euclidean distance across 6 normalized features.
  *
- * Uses Float32Array for distance storage (4 bytes each vs 8 for JS Number),
- * the JS equivalent of NumPy's vectorized float32 array — minimises GC pressure
- * over 200k iterations and keeps the typed-array in CPU cache during the sort.
+ * Uses K-Means cluster assignment to narrow the candidate pool to the same emotional
+ * cluster as the seed before computing distances, then falls back to the full dataset
+ * if the cluster pool is too small. Float32Array keeps GC pressure low.
  */
 function findSimilarSongs(seed, n = 10, excludeArtist = null) {
-  const len = dataset.length;
+  // Assign seed profile to its nearest emotional cluster
+  lastSeedCluster = assignEmotionalCluster(seed);
+  console.log(`[Similar] Seed cluster: ${lastSeedCluster} (${getClusterLabel(lastSeedCluster)})`);
+
+  // Prefer candidates from the same cluster (primary candidate pool)
+  let candidatePool = dataset.filter(s => s.cluster === lastSeedCluster);
+  console.log(`[Similar] Cluster pool size: ${candidatePool.length} songs`);
+
+  if (candidatePool.length < 20) {
+    console.log('[Similar] Cluster pool too small — falling back to full dataset');
+    candidatePool = dataset;
+  }
+
+  const len = candidatePool.length;
 
   // Pre-extract seed values into local vars so JS engine can keep them in registers
   const sv = seed.valence,       se = seed.energy,
         sd = seed.danceability,  st = seed.tempoNorm,
         sa = seed.acousticness,  sl = seed.loudnessNorm;
 
-  // Typed array: 4 bytes × 230k ≈ 900 KB vs 1.8 MB for Float64
+  // Typed array: 4 bytes × pool size — minimises GC pressure
   const dists = new Float32Array(len);
   for (let i = 0; i < len; i++) {
-    const s = dataset[i];
+    const s = candidatePool[i];
     dists[i] = Math.sqrt(
       (s.valence      - sv) ** 2 +
       (s.energy       - se) ** 2 +
@@ -1505,7 +1578,7 @@ function findSimilarSongs(seed, n = 10, excludeArtist = null) {
   const seen   = new Set();
   const result = [];
   for (const i of order) {
-    const s = dataset[i];
+    const s = candidatePool[i];
     if (excludeArtist ? s.artist === excludeArtist
                       : (s.track === seed.track && s.artist === seed.artist)) continue;
     const key = `${s.track}|||${s.artist}`;
@@ -1522,9 +1595,12 @@ function findSimilarSongs(seed, n = 10, excludeArtist = null) {
 // ── Results rendering ──
 
 function renderSimilarResults(songs, seed) {
+  const clusterInfo = lastSeedCluster !== null
+    ? ` · Seed cluster: ${getClusterLabel(lastSeedCluster)}`
+    : '';
   const subtitle = seed.isArtistProfile
-    ? `Songs most similar to ${seed.artist} (avg profile of ${seed.songCount} songs) · ${dataset.length.toLocaleString()} songs searched`
-    : `Songs most similar to "${seed.track}" by ${seed.artist} · ${dataset.length.toLocaleString()} songs searched`;
+    ? `Songs most similar to ${seed.artist} (avg profile of ${seed.songCount} songs)${clusterInfo} · ${dataset.length.toLocaleString()} songs searched`
+    : `Songs most similar to "${seed.track}" by ${seed.artist}${clusterInfo} · ${dataset.length.toLocaleString()} songs searched`;
   document.getElementById('similar-result-subtitle').textContent = subtitle;
 
   document.getElementById('similar-grid').innerHTML = songs.map((s, i) => `

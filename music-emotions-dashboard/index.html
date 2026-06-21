@@ -612,7 +612,8 @@
             <div class="explainer-badge prototype">This Prototype</div>
             <ul class="explainer-list">
               <li>Uses audio features only (valence, energy, danceability, tempo, acousticness, speechiness)</li>
-              <li>Weighted Euclidean distance similarity scoring</li>
+              <li>K-Means clustering narrows the candidate pool to the matching emotional cluster first</li>
+              <li>Weighted Euclidean distance similarity scoring (primary ranking method)</li>
               <li>Mood → target audio profile mapping</li>
               <li>Optional genre filter and seed song blending</li>
               <li>No personalization — same query = same results</li>
@@ -630,9 +631,11 @@
           </div>
         </div>
         <div class="callout" style="margin-top:16px">
-          This is an <strong>educational prototype</strong> demonstrating that even simple
-          audio feature distance scoring can surface musically coherent recommendations —
-          the same core insight that motivates content-based filtering in production systems.
+          <strong>How clustering improves recommendations:</strong> Clustering is used as a first
+          filtering step. The system first identifies the emotional cluster of the target profile
+          (High Energy Tracks, Calm &amp; Low-Valence Tracks, or Danceable &amp; Positive Groove Tracks),
+          then ranks songs <em>inside that cluster</em> using audio-feature similarity.
+          Weighted Euclidean distance is still the main ranking method.
         </div>
       </div>
 
